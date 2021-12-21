@@ -4,6 +4,8 @@ project(spz_cpp_2)
 
 file(REMOVE "build/test_file")
 
-add_executable(spz_2_all main.cpp)
+file(GLOB project_src "*.hpp" "*.cpp")
+
+add_executable(spz_2_all ${project_src} )
 
 execute_process(COMMAND "./spz_2_all")

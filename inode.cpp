@@ -1,11 +1,22 @@
-#include <stdatomic.h>
+#ifndef INODE
+#define INODE
 
-struct inode
-{
-    unsigned int ino;
-    int link_count;
-    atomic_int file_size;
-    unsigned int nlinks[4];
+#include "constants.hpp"
+#define UNUSED_FILE 0
+#define REGULAR_FILE 1
+#define DIRECTORY_FILE 2
+
+struct block_map{
+    int nlinks[NLINK];
     int single_indirect;
-
 };
+
+struct inode{
+    int type;  
+    int ino;
+    int link_count;
+    int file_size;
+    block_map blocks;
+};
+
+#endif //INODE
