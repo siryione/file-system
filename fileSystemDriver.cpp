@@ -8,8 +8,9 @@
 #include "constants.hpp"
 #define NUN 0
 
-Driver::Driver(BlockDevice devide){
+Driver::Driver(BlockDevice device){
     this->device = device;
+    unique_file_descriptor = 0;
 }
 
 void Driver::mk_fs(int n){
@@ -26,8 +27,6 @@ void Driver::mk_fs(int n){
     inode root = {.type = DIRECTORY_FILE, .ino=0, .link_count=1, .file_size=0};
     update_descriptor(root);
     add_link(root, root, ".");
-    root = get_descriptor(root.ino);
-    add_link(root, root, "..");
 }
 
 inode Driver::get_descriptor(int ino){
@@ -59,19 +58,30 @@ void Driver::create_file(std::string file_path){
 }
 
 int Driver::open(std::string file_path){
-    return 0;
+    inode file = lookup(file_path);
+    int nfd = unique_file_descriptor;
+    unique_file_descriptor++;
+    open_files[nfd] = file.ino;
+    return nfd;
 }
 
-void Driver::close(int nfd){}
+void Driver::close(int nfd){
+    open_files.erase(open_files.find(nfd));
+}
 
 void Driver::read(int nfd, int offset, int size, char* buff){
+    std::map<int,int>::iterator value = open_files.find(nfd);
+    int ino = value->second;
+    inode file = get_descriptor(ino);
+    read(file, offset, size, buff);
 }
 
-
-
-
-
-void Driver::write(int nfd, int offset, char* data, int size){}
+void Driver::write(int nfd, int offset, char* data, int size){
+    std::map<int,int>::iterator value = open_files.find(nfd);
+    int ino = value->second;
+    inode file = get_descriptor(ino);
+    write(file, offset, data, size);
+}
 
 
 void Driver::link(std::string file_path1, std::string file_path2){
@@ -141,7 +151,7 @@ void Driver::write(inode inode, int offset, char* data, int size){
     std::vector<int> block_addresses = get_block_addresses(inode, start_block, end_block+1);
     int written_bytes = 0;
     int need_towrite_bytes = size;
-    for(int block_address_index; block_address_index < block_addresses.size(); block_address_index++){
+    for(int block_address_index = 0; block_address_index < block_addresses.size(); block_address_index++){
         int offset_start = block_address_index == start_block ? offset % BLOCK_SIZE : 0;
         int offset_end = block_address_index == end_block ? BLOCK_SIZE - (offset+size) % BLOCK_SIZE : 0;
         int write_toblock = std::min(BLOCK_SIZE - offset_start - offset_end, need_towrite_bytes);

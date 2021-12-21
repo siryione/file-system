@@ -2,6 +2,7 @@
 #define FILE_SYSTEM_DRIVER 
 #include <string>
 #include <vector>
+#include <map>
 #include "blockDevice.hpp"
 #include "dentry.cpp"
 #include "inode.cpp"
@@ -9,6 +10,8 @@
 class Driver{
     private:
         BlockDevice device;
+        std::map<int,int> open_files;
+        int unique_file_descriptor;
         void set_block_inuse(int block_index);
         void set_block_unuse(int block_index);
         void set_max_descriptor_count(int n);
