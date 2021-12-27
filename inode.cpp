@@ -5,6 +5,7 @@
 #define UNUSED_FILE 0
 #define REGULAR_FILE 1
 #define DIRECTORY_FILE 2
+#define SIMLINK_FILE 3
 
 struct block_map{
     int nlinks[NLINK];

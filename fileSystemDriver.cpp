@@ -6,16 +6,18 @@
 #include <sstream>
 #include "fileSystemDriver.hpp"
 #include "constants.hpp"
-#define NUN 0
+
 
 Driver::Driver(BlockDevice device){
-    this->device = device;
+    this->device = BlockDevice();
     unique_file_descriptor = 0;
 }
+
 
 void Driver::mk_fs(int n){
     size_t metadata_size = TOTAL_MEMORY/8+sizeof(int)+n*sizeof(inode);
     int block_count = ceil((double)metadata_size/BLOCK_SIZE);
+
     Block zero_block;
     std::fill(zero_block.data, zero_block.data + sizeof(zero_block.data), 0);
     Block block_test;
@@ -23,11 +25,17 @@ void Driver::mk_fs(int n){
         device.write_block(block_index, zero_block);
         set_block_inuse(block_index);
     }
+
     set_max_descriptor_count(n);
+
     inode root = {.type = DIRECTORY_FILE, .ino=0, .link_count=1, .file_size=0};
     update_descriptor(root);
     add_link(root, root, ".");
+
+    root = get_descriptor(root.ino);
+    add_link(root, root, "..");
 }
+
 
 inode Driver::get_descriptor(int ino){
     inode res;
@@ -48,13 +56,14 @@ std::vector<dentry> Driver::read_directory(std::string dir_path){
 
 
 void Driver::create_file(std::string file_path){
-    std::string file_name = file_path;
-    inode dir = get_descriptor(0);
+    std::string file_name = get_file_name(file_path);
+    std::string parent_dir_path = parent_dir((file_path));
+    inode dir = lookup(parent_dir_path);
     inode file = get_first_unused_descriptor();
+    
     file.type = REGULAR_FILE;
     update_descriptor(file);
     add_link(dir, file, file_name);
-    
 }
 
 int Driver::open(std::string file_path){
@@ -69,14 +78,16 @@ void Driver::close(int nfd){
     open_files.erase(open_files.find(nfd));
 }
 
-void Driver::read(int nfd, int offset, int size, char* buff){
+
+std::vector<char> Driver::read(int nfd, int offset, int size){
     std::map<int,int>::iterator value = open_files.find(nfd);
     int ino = value->second;
     inode file = get_descriptor(ino);
-    read(file, offset, size, buff);
+    return read(file, offset, size);
 }
 
-void Driver::write(int nfd, int offset, char* data, int size){
+
+void Driver::write(int nfd, int offset, const char* data, int size){
     std::map<int,int>::iterator value = open_files.find(nfd);
     int ino = value->second;
     inode file = get_descriptor(ino);
@@ -85,28 +96,18 @@ void Driver::write(int nfd, int offset, char* data, int size){
 
 
 void Driver::link(std::string file_path1, std::string file_path2){
-    inode dir = get_descriptor(0); //dir by file_path2
+    inode dir = lookup(parent_dir(file_path2)); //dir by file_path2
     inode file = lookup(file_path1);
-    std::string file_name = file_path2;
+    std::string file_name = get_file_name(file_path2);
     add_link(dir, file, file_name);
 }
 
-void Driver::unlink(std::string file_path){
-    inode dir = get_descriptor(0); //dir by file_path
-    std::string file_name = file_path;
-    std::vector<dentry> dentries = read_directory(dir);
-    for(int dentry_index = 0; dentry_index < dentries.size(); dentry_index++){
-        if(dentries[dentry_index].file_name == file_name){
-            dentries.erase(dentries.begin()+dentry_index);
-            break;
-        }
-    }
-    truncate(dir, dir.file_size-sizeof(dentry));
-    dentry dentry_arr[dentries.size()];
-    std::copy(dentries.begin(), dentries.end(), dentry_arr);
-    write(dir, 0, (char*)&dentry_arr, dentries.size()*sizeof(dentry));
-}
 
+void Driver::unlink(std::string file_path){
+    inode dir = lookup(parent_dir(file_path)); //dir by file_path
+    std::string file_name = get_file_name(file_path);
+    unlink(dir, file_name);
+}
 
 
 void Driver::truncate(std::string file_path, uint new_size){
@@ -114,38 +115,135 @@ void Driver::truncate(std::string file_path, uint new_size){
     truncate(file, new_size);
 }
 
-//private
+
+void Driver::mkdir(std::string dir_path){
+    std::string file_name = get_file_name(dir_path);
+    std::string parent_dir_path = parent_dir(dir_path);
+    inode dir = lookup(parent_dir_path);
+    inode file = get_first_unused_descriptor();
+    file.type = DIRECTORY_FILE;
+    update_descriptor(file);
+    try
+    {
+        add_link(dir, file, file_name);
+        add_link(file, file, ".");
+        file = get_descriptor(file.ino);
+        add_link(file, file, "..");
+    }
+    catch(const std::exception& e)
+    {
+        file.type = UNUSED_FILE;
+        update_descriptor(file);
+        throw;
+    }
+    
+}
 
 
-inode Driver::lookup(std::string file_path){
-    inode dir = get_descriptor(0);
-    std::vector<dentry> dentries = read_directory(dir);
+void Driver::rmdir(std::string dir_path){
+    std::string file_name = get_file_name(dir_path);
+    std::string parent_dir_path = parent_dir(dir_path);
+    inode dir = lookup(parent_dir_path);
+    inode file = lookup(dir_path);
+    if(file.file_size != sizeof(dentry)*2){
+        throw std::invalid_argument("dir must be empty");
+    }
+    unlink(dir,file_name);
+    truncate(file, 0);
+    file.type = UNUSED_FILE;
+    update_descriptor(file);
+}
+
+
+void Driver::symlink(std::string file_path, std::string sim_path){
+    std::string file_name = get_file_name(file_path);
+    inode dir = lookup(parent_dir(file_path));
+    inode file = get_first_unused_descriptor();
+    file.type = SIMLINK_FILE;
+    update_descriptor(file);
+    add_link(dir, file, file_name);
+    truncate(file, sim_path.size());
+    write(file, 0, sim_path.c_str(), sim_path.size());
+}
+
+
+void Driver::cd(std::string dir_path){
+    inode dir = lookup(dir_path);
+    if(dir.type != DIRECTORY_FILE){
+        throw std::invalid_argument("invalid dir path");
+    }
+    ino = dir.ino;
+}
+
+
+//private----------------------------------------------------------------------------------------------------------------------------------------------
+
+
+std::vector<char> Driver::read(inode inode, int offset, int size){
+    if(inode.file_size < offset+size){
+        throw std::overflow_error("out of file bounds");
+    }
+    std::vector<char> buff;
+    int start_block = offset/BLOCK_SIZE;
+    int end_block = (offset+size)/BLOCK_SIZE;
+    std::vector<int> block_addresses = get_block_addresses(inode, start_block, end_block+1);
+    int written_bytes = 0;
+    for(int block_address_index = 0; block_address_index < block_addresses.size(); block_address_index++){
+        int offset_start = block_address_index == start_block ? offset % BLOCK_SIZE : 0;
+        int offset_end = block_address_index == end_block ? BLOCK_SIZE - (offset+size) % BLOCK_SIZE : 0;
+        Block block = device.read_block(block_addresses[block_address_index]);
+        for(int i = 0; i < BLOCK_SIZE - offset_start - offset_end; i++){
+            buff.push_back(block.data[i+offset_start]);
+        }
+//        memcpy(buff+written_bytes, block.data + offset_start, BLOCK_SIZE - offset_start - offset_end);
+        written_bytes += BLOCK_SIZE-offset_start-offset_end;
+    }
+    return buff;
+}
+
+
+inode Driver::lookup(const std::string& file_path, bool resolve_symlink, int origin_dir_ino, int * symlink_depth){
+    if(origin_dir_ino == -1){
+        origin_dir_ino = ino;
+    }
+    int symlink_saver = 0;
+    if(symlink_depth == nullptr){
+        symlink_depth = &symlink_saver;
+    }
+    if(file_path.empty()){
+        return get_descriptor(origin_dir_ino);
+    }
+    if(file_path == "/"){
+        return get_descriptor(0);
+    }
+    inode dir = lookup(parent_dir(file_path), true, origin_dir_ino, symlink_depth);
+    std::vector<dentry> dentries = read_directory(dir); // ----------------------!!!!!!!!!!!!!!!!!!!!!!!
+    std::string file_name = get_file_name(file_path);
     for(int dentry_index = 0; dentry_index < dentries.size(); dentry_index++){
-        if(dentries[dentry_index].file_name == file_path){
-            return get_descriptor(dentries[dentry_index].ino);
+        if(dentries[dentry_index].file_name == file_name){
+            inode file = get_descriptor(dentries[dentry_index].ino);
+            if(file.type == SIMLINK_FILE && resolve_symlink){
+                (* symlink_depth)++;
+                if(*symlink_depth >= MAX_DEPTH){
+                    throw std::overflow_error("max symlink depth");
+                }
+                std::vector<char> read_res = read(file, 0, file.file_size);
+                std::string symlink_path(read_res.begin(), read_res.end());
+                return lookup(symlink_path, true, dir.ino, symlink_depth);
+            }
+            else{
+                return file;
+            }
         }
     }
     throw std::invalid_argument("file does not exist");
 }
 
 
-// test inneed 100% buff[size]
-void Driver::read(inode inode, int offset, int size, char* buff){
-    int start_block = offset/BLOCK_SIZE;
-    int end_block = (offset+size)/BLOCK_SIZE;
-    std::vector<int> block_addresses = get_block_addresses(inode, start_block, end_block+1);
-    int written_bytes = 0;
-    for(int block_address_index; block_address_index < block_addresses.size(); block_address_index++){
-        int offset_start = block_address_index == start_block ? offset % BLOCK_SIZE : 0;
-        int offset_end = block_address_index == end_block ? BLOCK_SIZE - (offset+size) % BLOCK_SIZE : 0;
-        Block block = device.read_block(block_addresses[block_address_index]);
-        memcpy(buff+written_bytes, block.data + offset_start, BLOCK_SIZE - offset_start - offset_end);
-        written_bytes += BLOCK_SIZE-offset_start-offset_end;
+void Driver::write(inode inode, int offset, const char* data, int size){
+    if(inode.file_size < offset+size){
+        throw std::overflow_error("out of file bounds");
     }
-}
-
-
-void Driver::write(inode inode, int offset, char* data, int size){
     int start_block = offset/BLOCK_SIZE;
     int end_block = (offset+size)/BLOCK_SIZE;
     std::vector<int> block_addresses = get_block_addresses(inode, start_block, end_block+1);
@@ -208,6 +306,7 @@ void Driver::truncate(inode file,int new_size){
         }
         for(int i = 0; i < need_block_count- block_count; i++){
             set_block_inuse(free_block_addresses[i]);
+            clean_block(free_block_addresses[i]);
             file = add_block(file, free_block_addresses[i]);
         }
         file.file_size = new_size;
@@ -245,6 +344,7 @@ inode Driver::add_block(inode inode, int block_address){
         if(inode.blocks.single_indirect == NUN){
             inode.blocks.single_indirect = get_unused_block();
             set_block_inuse(inode.blocks.single_indirect);
+            clean_block(inode.blocks.single_indirect);
             update_descriptor(inode);
         }
         Block single_indirect_block = device.read_block(inode.blocks.single_indirect);
@@ -354,12 +454,12 @@ void Driver::add_link(inode dir, inode file, std::string file_name){
 }
 
 std::vector<dentry> Driver::read_directory(inode dir){
-    char read_res[dir.file_size];
-    read(dir, 0, dir.file_size, read_res);
+//    char read_res[dir.file_size];
+    std::vector<char> read_res = read(dir, 0, dir.file_size);
     std::vector<dentry> result;
     for(int dentry_index = 0; dentry_index < dir.file_size/sizeof(dentry); dentry_index++){
         dentry d;
-        memcpy(&d, read_res+dentry_index*sizeof(dentry), sizeof(dentry));
+        memcpy(&d, read_res.data()+dentry_index*sizeof(dentry), sizeof(dentry));
         result.push_back(d);
     }
     return result;
@@ -382,4 +482,42 @@ int Driver::get_unused_block(){
         }
     }
     throw std::overflow_error("no unused blocks left");
+}
+
+
+bool Driver::is_path_abs(std::string file_path){
+    return file_path[0] == '/'; 
+}
+
+
+std::string Driver::parent_dir(std::string path){
+    const int pos=path.find_last_of('/');
+    return path.substr(0, pos);
+}
+
+
+std::string Driver::get_file_name(std::string path){
+    const int pos=path.find_last_of('/');
+    return path.substr(pos+1, path.size());
+}
+
+
+void Driver::unlink(inode dir, std::string file_name){
+    std::vector<dentry> dentries = read_directory(dir);
+    for(int dentry_index = 0; dentry_index < dentries.size(); dentry_index++){
+        if(dentries[dentry_index].file_name == file_name){
+            dentries.erase(dentries.begin()+dentry_index);
+            break;
+        }
+    }
+    truncate(dir, dir.file_size-sizeof(dentry));
+    dentry dentry_arr[dentries.size()];
+    std::copy(dentries.begin(), dentries.end(), dentry_arr);
+    write(dir, 0, (char*)&dentry_arr, dentries.size()*sizeof(dentry));
+}
+
+
+void Driver::clean_block(int block_index){
+    Block block = {0};
+    device.write_block(block_index, block);
 }
