@@ -75,7 +75,9 @@ int Driver::open(std::string file_path){
 }
 
 void Driver::close(int nfd){
+    inode file = get_descriptor(open_files[nfd]);
     open_files.erase(open_files.find(nfd));
+    remove_or_update_descriptor(file);
 }
 
 
@@ -507,6 +509,9 @@ void Driver::unlink(inode dir, std::string file_name){
     for(int dentry_index = 0; dentry_index < dentries.size(); dentry_index++){
         if(dentries[dentry_index].file_name == file_name){
             dentries.erase(dentries.begin()+dentry_index);
+            inode file = get_descriptor(dentries[dentry_index].ino);
+            file.link_count--;
+            remove_or_update_descriptor(file);
             break;
         }
     }
@@ -520,4 +525,17 @@ void Driver::unlink(inode dir, std::string file_name){
 void Driver::clean_block(int block_index){
     Block block = {0};
     device.write_block(block_index, block);
+}
+
+
+void Driver::remove_or_update_descriptor(inode inode){
+    int val = inode.ino;
+    auto is_file_opened = std::find_if(open_files.begin(), open_files.end(), [val](const auto& f) {return f.second == val;}) != open_files.end();
+    if(inode.link_count == 0 && !is_file_opened){
+        truncate(inode, 0);
+        inode.type = UNUSED_FILE;
+    }
+    else{
+        update_descriptor(inode);
+    }
 }

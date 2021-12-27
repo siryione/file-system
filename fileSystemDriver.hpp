@@ -34,6 +34,7 @@ class Driver{
         bool is_path_abs(std::string file_path);
         void unlink(inode inode, std::string file_name);
         void clean_block(int block_index);
+        void remove_or_update_descriptor(inode inode);
 
     public:
     Driver(BlockDevice device);
